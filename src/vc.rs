@@ -306,6 +306,17 @@ pub struct Presentation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holder: Option<URI>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub holder_binding: Option<HolderBinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(flatten)]
+    pub property_set: Option<Map<String, Value>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HolderBinding {
+    #[serde(rename = "type")]
+    pub type_: String,
     #[serde(flatten)]
     pub property_set: Option<Map<String, Value>>,
 }
@@ -1597,6 +1608,17 @@ impl Presentation {
         }
     }
 
+    /// Check the VP's [Presentation::holder_binding]
+    pub async fn check_holder_binding(&self) -> VerificationResult {
+        let mut results = VerificationResult::new();
+        //
+        // TODO
+        results
+            .warnings
+            .push(format!("Holder binding check is not implemented!"));
+        results
+    }
+
     // Decode and verify a JWT-encoded Verifiable Presentation. On success, returns the Verifiable
     // Presentation and verification result.
     pub async fn decode_verify_jwt(
@@ -1669,6 +1691,12 @@ impl Presentation {
                 VerificationResult::error(&format!("Invalid VP: {}", err)),
             );
         }
+        let mut results = VerificationResult::new();
+        let mut result = vp.check_holder_binding().await;
+        if !result.errors.is_empty() {
+            return (None, result);
+        }
+        results.append(&mut result);
         // TODO: error if any unconvertable claims
         // TODO: unify with verify function?
         let (proofs, matched_jwt) = match vp
@@ -1698,7 +1726,6 @@ impl Presentation {
                 );
             }
         };
-        let mut results = VerificationResult::new();
         if matched_jwt {
             match crate::jws::verify_bytes_warnable(
                 header.algorithm,
@@ -1830,8 +1857,12 @@ impl Presentation {
                         .clone()
                         .unwrap_or(ProofPurpose::Authentication);
                     Some(
-                        get_verification_methods_for_purpose(holder, resolver, proof_purpose)
-                            .await?,
+                        self.get_verification_methods_for_purpose_bindable(
+                            holder,
+                            resolver,
+                            proof_purpose,
+                        )
+                        .await?,
                     )
                 } else {
                     None
@@ -1882,6 +1913,12 @@ impl Presentation {
                 "credentialStatus check not valid for VerifiablePresentation",
             );
         }
+        let mut results = VerificationResult::new();
+        let mut result = self.check_holder_binding().await;
+        if !result.errors.is_empty() {
+            return result;
+        }
+        results.append(&mut result);
         let (proofs, _) = match self.filter_proofs(options, None, resolver).await {
             Ok(proofs) => proofs,
             Err(err) => {
@@ -1892,7 +1929,6 @@ impl Presentation {
             return VerificationResult::error("No applicable proof");
             // TODO: say why, e.g. expired
         }
-        let mut results = VerificationResult::new();
         // Try verifying each proof until one succeeds
         for proof in proofs {
             let mut result = proof.verify(self, resolver, context_loader).await;
@@ -1903,6 +1939,15 @@ impl Presentation {
             results.append(&mut result);
         }
         results
+    }
+
+    async fn get_verification_methods_for_purpose_bindable(
+        &self,
+        holder: &str,
+        resolver: &dyn DIDResolver,
+        proof_purpose: ProofPurpose,
+    ) -> Result<Vec<String>, String> {
+        get_verification_methods_for_purpose(holder, resolver, proof_purpose).await
     }
 }
 
@@ -1915,6 +1960,7 @@ impl Default for Presentation {
             id: None,
             proof: None,
             holder: None,
+            holder_binding: None,
             property_set: None,
         }
     }
@@ -3365,6 +3411,7 @@ _:c14n0 <https://w3id.org/security#verificationMethod> <https://example.org/foo/
             verifiable_credential: Some(OneOrMany::One(CredentialOrJWT::Credential(vc))),
             proof: None,
             holder: Some(URI::String("did:example:foo".to_string())),
+            holder_binding: None,
             property_set: None,
         };
         let vp_without_proof = vp.clone();
@@ -3501,5 +3548,57 @@ _:c14n0 <https://w3id.org/security#verificationMethod> <https://example.org/foo/
         .await;
         println!("{:#?}", verification_result);
         assert!(verification_result.errors.is_empty());
+    }
+
+    #[async_std::test]
+    async fn present_with_example_holder_binding() {
+        let mut context_loader = crate::jsonld::ContextLoader::default();
+        let mut vp: Presentation = serde_json::from_value(serde_json::json!({
+            "@context": [
+                "https://www.w3.org/2018/credentials/v1",
+                {
+                    "@vocab": "https://example.org/example-holder-binding#"
+                }
+            ],
+            "type": ["VerifiablePresentation"],
+            "holderBinding": {
+                "type": "ExampleHolderBinding2022",
+                "from": "did:example:foo",
+                "to": "did:example:bar",
+                "proof": "IMMA_DELEGATE_CREDS"
+            },
+            "holder": "did:example:bar"
+        }))
+        .unwrap();
+
+        let key: JWK = serde_json::from_str(JWK_JSON).unwrap();
+        let mut vp_issue_options = LinkedDataProofOptions::default();
+        let vp_proof_vm = "did:example:foo#key1".to_string();
+        vp_issue_options.verification_method = Some(URI::String(vp_proof_vm));
+        vp_issue_options.proof_purpose = Some(ProofPurpose::Authentication);
+        vp_issue_options.checks = None;
+        let vp_proof = vp
+            .generate_proof(&key, &vp_issue_options, &DIDExample, &mut context_loader)
+            .await
+            .unwrap();
+        vp.add_proof(vp_proof);
+        println!("VP: {}", serde_json::to_string_pretty(&vp).unwrap());
+        vp.validate().unwrap();
+        let vp_verification_result = vp.verify(None, &DIDExample, &mut context_loader).await;
+        println!("{:#?}", vp_verification_result);
+        assert!(vp_verification_result.errors.is_empty());
+
+        todo!();
+        // Sign presentation to create VP
+        // TODO
+        // Verify VP
+
+        // Do the same thing but with a mismatched holder binding
+        // TODO
+        // Verify VP fails
+        // TODO
+
+        // Check that verifying a VP with an unknown holder binding type produces an error.
+        // TODO
     }
 }
