@@ -29,6 +29,7 @@ pub mod aleo;
 #[cfg(feature = "bbs")]
 pub mod bbs;
 pub mod blakesig;
+mod cacao;
 pub mod caip10;
 pub mod caip2;
 pub mod der;
