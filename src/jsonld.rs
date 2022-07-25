@@ -337,6 +337,16 @@ lazy_static! {
     };
 }
 
+pub(crate) async fn load_context_from_web(
+    context_url: String,
+) -> Result<RemoteDocument, reqwest::Error> {
+    let resp = reqwest::get(context_url.clone()).await?.text().await?;
+    let jsonld = resp.as_str();
+    let doc = json::parse(jsonld).unwrap();
+    let iri = Iri::new(&context_url).unwrap();
+    Ok(RemoteDocument::new(doc, iri))
+}
+
 #[derive(Clone)]
 pub struct StaticLoader;
 
@@ -390,7 +400,11 @@ impl Loader for StaticLoader {
                 JFF_VC_EDU_PLUGFEST_2022_CONTEXT => {
                     Ok(JFF_VC_EDU_PLUGFEST_2022_CONTEXT_DOCUMENT.clone())
                 }
-                _ => Err(json_ld::ErrorCode::LoadingDocumentFailed.into()),
+
+                _ => load_context_from_web(url.to_string()).await.map_err(|e| {
+                    eprintln!("unable to load context from web : {e}");
+                    json_ld::ErrorCode::LoadingDocumentFailed.into()
+                }),
             }
         }
         .boxed()
