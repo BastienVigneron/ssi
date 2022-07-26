@@ -339,11 +339,11 @@ lazy_static! {
 
 pub(crate) async fn load_context_from_web(
     context_url: String,
-) -> Result<RemoteDocument, reqwest::Error> {
+) -> Result<RemoteDocument, Box<dyn std::error::Error>> {
     let resp = reqwest::get(context_url.clone()).await?.text().await?;
     let jsonld = resp.as_str();
-    let doc = json::parse(jsonld).unwrap();
-    let iri = Iri::new(&context_url).unwrap();
+    let doc = json::parse(jsonld)?;
+    let iri = Iri::new(&context_url)?;
     Ok(RemoteDocument::new(doc, iri))
 }
 
